@@ -50,21 +50,17 @@ def load_and_analyze_dataset(dataset_name):
 
                 # Initialize OpenAI analysis
                 try:
-                    status.write("🤖 Analyzing dataset with OpenAI...")
+                    status.write("🤖 Analyzing dataset ...")
                     client = initialize_openai_client(st.session_state.openai_key)
                     sample_data = dataset[:5]
-                    print(
-                        "Sample data:", json.dumps(sample_data, indent=2)
-                    )  # Debug print
+                    print("Sample data:", json.dumps(sample_data, indent=2))
 
                     analysis = analyze_dataset_with_openai(client, sample_data)
-                    print(
-                        "Analysis result:", json.dumps(analysis, indent=2)
-                    )  # Debug print
+                    print("Analysis result:", json.dumps(analysis, indent=2))
 
                     st.session_state.openai_analysis = analysis
                 except Exception as e:
-                    print(f"Analysis error: {str(e)}")  # Debug print
+                    print(f"Analysis error: {str(e)}")
                     status.update(label=f"❌ Error: {str(e)}", state="error")
 
                 status.update(
@@ -170,10 +166,11 @@ def generate_and_display_card():
             dataset_info = {"dataset_name": st.session_state.dataset_name}
 
             readme_content = generate_dataset_card(
-                dataset_info,
-                distribution_plots,
-                wordcloud_plots,
-                st.session_state.openai_analysis,
+                dataset_info=dataset_info,
+                distribution_plots=distribution_plots,
+                wordcloud_plots=wordcloud_plots,
+                openai_analysis=st.session_state.openai_analysis,
+                df=st.session_state.df,  # Added DataFrame parameter
             )
 
             # Display results
@@ -192,7 +189,7 @@ def generate_and_display_card():
             )
 
         except Exception as e:
-            print(f"Error in generate_and_display_card: {str(e)}")  # Debug print
+            print(f"Error in generate_and_display_card: {str(e)}")
             st.error(f"Error generating dataset card: {str(e)}")
             raise e
 
@@ -221,6 +218,17 @@ def get_api_keys():
         return None, None
 
 
+def get_secrets():
+    """Get API keys from secrets.toml if it exists."""
+    try:
+        hf_token = st.secrets.get("api_keys", {}).get("huggingface", "")
+        openai_key = st.secrets.get("api_keys", {}).get("openai", "")
+        return hf_token, openai_key
+    except Exception as e:
+        print(f"No secrets file found or error reading secrets: {e}")
+        return "", ""
+
+
 def main():
     st.title("📊 Dataset Card Generator")
     st.markdown(
@@ -230,44 +238,49 @@ def main():
     """
     )
 
+    # Get secrets if available
+    default_hf_token, default_openai_key = get_api_keys()
+
     # Authentication section in sidebar
     with st.sidebar:
         st.header("🔑 Authentication")
 
-        # Get API keys from secrets or user input
-        default_hf_token, default_openai_key = get_api_keys()
-
-        # Show input fields with default values if available
-        hf_token = st.text_input(
-            "HuggingFace Token",
-            value=default_hf_token if default_hf_token else "",
-            type="password" if not default_hf_token else "default",
-            help="Your HuggingFace API token",
-        )
-
+        # OpenAI API key (required)
         openai_key = st.text_input(
             "OpenAI API Key",
-            value=default_openai_key if default_openai_key else "",
+            value=default_openai_key,
             type="password" if not default_openai_key else "default",
-            help="Your OpenAI API key for dataset analysis",
+            help="Required: Your OpenAI API key for dataset analysis",
         )
 
-        if hf_token and openai_key:
+        # HuggingFace token (optional)
+        hf_token = st.text_input(
+            "HuggingFace Token (optional)",
+            value=default_hf_token,
+            type="password" if not default_hf_token else "default",
+            help="Optional: Only required for private datasets",
+        )
+
+        if openai_key:
             try:
-                login(hf_token)
+                # Only attempt HF login if token is provided
+                if hf_token:
+                    login(hf_token)
+                    st.success("✅ HuggingFace authentication successful!")
+
                 st.session_state.openai_key = openai_key
-                st.success("✅ Authentication successful!")
+                st.success("✅ OpenAI API key set!")
             except Exception as e:
-                st.error(f"❌ Authentication failed: {str(e)}")
+                st.error(f"❌ Authentication error: {str(e)}")
                 return
+        else:
+            st.info("👆 Please enter your OpenAI API key to get started.")
+            return
 
     # Main content area
-    if not (hf_token and openai_key):
-        st.info("👆 Please enter your API keys in the sidebar to get started.")
+    if not openai_key:
         return
 
-    # Dataset Input Section
-    st.header("Dataset Selection")
     dataset_name = st.text_input(
         "Enter HuggingFace Dataset Name",
         placeholder="username/dataset",
@@ -278,7 +291,6 @@ def main():
         if st.button("Load Dataset", type="primary"):
             load_and_analyze_dataset(dataset_name)
 
-    # Analysis Section (only shown after dataset is loaded)
     if st.session_state.df is not None:
         display_dataset_analysis()
 
