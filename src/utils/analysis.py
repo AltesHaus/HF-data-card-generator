@@ -177,16 +177,51 @@ def create_wordcloud(data, column):
         raise e
 
 
-def analyze_dataset_with_openai(client: OpenAI, dataset_sample) -> dict:
-    """Analyze dataset sample using OpenAI API."""
-    # Get a single record for schema inference
-    single_record = (
-        dataset_sample[0] if isinstance(dataset_sample, list) else dataset_sample
-    )
+def analyze_dataset_with_openai(client: OpenAI, data) -> dict:
+    """Analyze dataset using OpenAI API with improved type inference and efficient sampling."""
+    # Convert dictionary to DataFrame if needed
+    if isinstance(data, dict):
+        df = pd.DataFrame(data)
+    else:
+        df = data
 
-    # Convert the full sample to JSON for overview analysis
-    sample_json = json.dumps(dataset_sample, indent=2)
-    single_record_json = json.dumps(single_record, indent=2)
+    # Take a very small sample for efficiency
+    sample_size = min(3, len(df))
+    if len(df) > 3:
+        sample_indices = df.index[:sample_size]  # Take first 3 rows instead of random sampling
+        sample_df = df.loc[sample_indices]
+    else:
+        sample_df = df
+        
+    dataset_sample = sample_df.to_dict('records')
+    single_record = dataset_sample[0]
+
+    # Create type hints dictionary - only process the sample
+    type_hints = {}
+    for column in sample_df.columns:
+        # Get the pandas dtype
+        dtype = sample_df[column].dtype
+        
+        # Efficiently identify types without complex operations
+        if pd.api.types.is_integer_dtype(dtype):
+            type_hints[column] = "integer"
+        elif pd.api.types.is_float_dtype(dtype):
+            type_hints[column] = "number"
+        elif pd.api.types.is_bool_dtype(dtype):
+            type_hints[column] = "boolean"
+        elif pd.api.types.is_datetime64_any_dtype(dtype):
+            type_hints[column] = "datetime"
+        elif pd.api.types.is_categorical_dtype(dtype):
+            type_hints[column] = "categorical"
+        elif pd.api.types.is_string_dtype(dtype):
+            # Simple check for list-like values
+            first_val = sample_df[column].iloc[0]
+            if isinstance(first_val, list):
+                type_hints[column] = "array"
+            else:
+                type_hints[column] = "string"
+        else:
+            type_hints[column] = "unknown"
 
     prompt = f"""Analyze this dataset sample and provide the following in a JSON response:
 
@@ -195,15 +230,11 @@ def analyze_dataset_with_openai(client: OpenAI, dataset_sample) -> dict:
        - A bullet-pointed list of key features and statistics
        - A brief statement about potential ML/AI applications
     
-    2. A schema showing each field's type and description. Use this single record for type inference:
-    {single_record_json}
+    2. A schema showing each field's type and description. Here is the actual DataFrame type information:
+    {json.dumps(type_hints, indent=2)}
     
-    For schema types, use precise types like:
-    - "string" for text fields
-    - "number" for numeric fields
-    - "boolean" for true/false
-    - "array of X" for arrays where X is the type of elements
-    - "object" for nested objects, with nested field descriptions
+    And here's a single record for reference:
+    {json.dumps(single_record, indent=2)}
     
     3. A formatted example record
 
@@ -220,15 +251,15 @@ def analyze_dataset_with_openai(client: OpenAI, dataset_sample) -> dict:
         }},
         "schema": {{
             "field_name": {{
-                "type": "precise type as described above",
+                "type": "use the type from the provided type_hints",
                 "description": "Description of what this field contains"
             }}
         }},
         "example": {{"key": "value"}}
     }}
     
-    For context, here are more sample records to help with the overview and features:
-    {sample_json}
+    For context, here are more sample records:
+    {json.dumps(dataset_sample, indent=2)}
     """
 
     try:
@@ -241,15 +272,12 @@ def analyze_dataset_with_openai(client: OpenAI, dataset_sample) -> dict:
 
         # Get the response content
         response_text = response.choices[0].message.content
-        print("OpenAI Response:", response_text)
-
+        
         # Extract JSON from the response
         json_str = extract_json_from_response(response_text)
-        print("Extracted JSON:", json_str)
-
+        
         # Parse the JSON
         result = json.loads(json_str)
-        print("Parsed Result:", result)
         return result
 
     except Exception as e:
@@ -263,7 +291,6 @@ def analyze_dataset_with_openai(client: OpenAI, dataset_sample) -> dict:
             "schema": {},
             "example": {},
         }
-
 
 def analyze_dataset_statistics(df):
     """Generate simplified dataset statistics with token counting."""
