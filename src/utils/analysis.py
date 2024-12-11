@@ -1,15 +1,16 @@
-from openai import OpenAI
-import json
-import yaml
-import re
+import base64
 import datetime
+import io
+import json
+import re
+from collections import Counter
+
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import pandas as pd
-import base64
-import io
-from collections import Counter
 import tiktoken
+import yaml
+from openai import OpenAI
 
 
 def extract_json_from_response(text: str) -> str:
@@ -130,8 +131,8 @@ def create_distribution_plot(data, column):
 
 def create_wordcloud(data, column):
     """Create a word cloud visualization."""
-    from wordcloud import WordCloud
     import matplotlib.pyplot as plt
+    from wordcloud import WordCloud
 
     try:
         # Handle list columns
@@ -188,12 +189,14 @@ def analyze_dataset_with_openai(client: OpenAI, data) -> dict:
     # Take a very small sample for efficiency
     sample_size = min(3, len(df))
     if len(df) > 3:
-        sample_indices = df.index[:sample_size]  # Take first 3 rows instead of random sampling
+        sample_indices = df.index[
+            :sample_size
+        ]  # Take first 3 rows instead of random sampling
         sample_df = df.loc[sample_indices]
     else:
         sample_df = df
-        
-    dataset_sample = sample_df.to_dict('records')
+
+    dataset_sample = sample_df.to_dict("records")
     single_record = dataset_sample[0]
 
     # Create type hints dictionary - only process the sample
@@ -201,7 +204,7 @@ def analyze_dataset_with_openai(client: OpenAI, data) -> dict:
     for column in sample_df.columns:
         # Get the pandas dtype
         dtype = sample_df[column].dtype
-        
+
         # Efficiently identify types without complex operations
         if pd.api.types.is_integer_dtype(dtype):
             type_hints[column] = "integer"
@@ -272,10 +275,10 @@ def analyze_dataset_with_openai(client: OpenAI, data) -> dict:
 
         # Get the response content
         response_text = response.choices[0].message.content
-        
+
         # Extract JSON from the response
         json_str = extract_json_from_response(response_text)
-        
+
         # Parse the JSON
         result = json.loads(json_str)
         return result
@@ -292,38 +295,39 @@ def analyze_dataset_with_openai(client: OpenAI, data) -> dict:
             "example": {},
         }
 
+
 def analyze_dataset_statistics(df):
     """Generate simplified dataset statistics with token counting."""
     stats = {
         "basic_stats": {
             "total_records": len(df),
             "total_features": len(df.columns),
-            "memory_usage": f"{df.memory_usage(deep=True).sum() / (1024*1024):.2f} MB"
+            "memory_usage": f"{df.memory_usage(deep=True).sum() / (1024*1024):.2f} MB",
         },
-        "token_stats": {
-            "total": 0,
-            "by_column": {}
-        }
+        "token_stats": {"total": 0, "by_column": {}},
     }
-    
+
     # Count tokens for each column
     for column in df.columns:
         try:
-            if df[column].dtype == 'object' or isinstance(df[column].iloc[0], list):
+            if df[column].dtype == "object" or isinstance(df[column].iloc[0], list):
                 # For list columns, join items into strings
                 if isinstance(df[column].iloc[0], list):
-                    token_counts = df[column].apply(lambda x: count_tokens(' '.join(str(item) for item in x)))
+                    token_counts = df[column].apply(
+                        lambda x: count_tokens(" ".join(str(item) for item in x))
+                    )
                 else:
                     token_counts = df[column].apply(lambda x: count_tokens(str(x)))
-                
+
                 total_tokens = int(token_counts.sum())
                 stats["token_stats"]["total"] += total_tokens
                 stats["token_stats"]["by_column"][column] = total_tokens
         except Exception as e:
             print(f"Error processing column {column}: {str(e)}")
             continue
-    
+
     return stats
+
 
 def format_dataset_stats(stats):
     """Format simplified dataset statistics as markdown."""
@@ -333,7 +337,9 @@ def format_dataset_stats(stats):
 * Total Records: {total_records:,}
 * Total Features: {total_features}
 * Memory Usage: {memory_usage}
-""".format(**stats["basic_stats"])
+""".format(
+        **stats["basic_stats"]
+    )
 
     # Token Statistics
     if stats["token_stats"]["total"] > 0:
@@ -346,6 +352,7 @@ def format_dataset_stats(stats):
 
     return md
 
+
 def generate_dataset_card(
     dataset_info: dict,
     distribution_plots: dict,
@@ -353,56 +360,23 @@ def generate_dataset_card(
     openai_analysis: dict,
     df: pd.DataFrame,
 ) -> str:
-    """Generate the complete dataset card content."""
+    """Generate a beautiful and clean dataset card."""
+
+    # Basic dataset metadata
     yaml_content = {
         "language": ["en"],
         "license": "apache-2.0",
         "multilinguality": "monolingual",
-        "size_categories": ["1K<n<10K"],
+        "size_categories": [get_size_category(len(df))],
         "task_categories": ["other"],
     }
-
     yaml_string = yaml.dump(yaml_content, sort_keys=False)
-    description = openai_analysis["description"]
-
-    # Generate schema table
-    schema_table = generate_schema_table(openai_analysis["schema"])
-
-    # Format example as JSON code block
-    example_block = f"```json\n{json.dumps(openai_analysis['example'], indent=2)}\n```"
 
     # Generate dataset statistics
     stats = analyze_dataset_statistics(df)
-    stats_section = format_dataset_stats(stats)
+    description = openai_analysis["description"]
 
-    # Add distribution plots inline
-    distribution_plots_md = ""
-    if distribution_plots:
-        distribution_plots_md = "\n### Distribution Plots\n\n"
-        distribution_plots_md += '<div style="display: grid; grid-template-columns: repeat(1, 1fr); gap: 20px;">\n'
-        for col, img_str in distribution_plots.items():
-            distribution_plots_md += f"<div>\n"
-            distribution_plots_md += f"<h4>Distribution of {col}</h4>\n"
-            distribution_plots_md += f'<img src="data:image/png;base64,{img_str}" style="width: 100%; height: auto;">\n'
-            distribution_plots_md += "</div>\n"
-        distribution_plots_md += "</div>\n\n"
-
-    # Add word clouds inline in a grid
-    wordcloud_plots_md = ""
-    if wordcloud_plots:
-        wordcloud_plots_md = "\n### Word Clouds\n\n"
-        wordcloud_plots_md += '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">\n'
-        for col, img_str in wordcloud_plots.items():
-            wordcloud_plots_md += f"<div>\n"
-            wordcloud_plots_md += f"<h4>Word Cloud for {col}</h4>\n"
-            wordcloud_plots_md += f'<img src="data:image/png;base64,{img_str}" style="width: 100%; height: auto;">\n'
-            wordcloud_plots_md += "</div>\n"
-        wordcloud_plots_md += "</div>\n\n"
-
-    # Generate clean dataset name for citation
-    clean_dataset_name = dataset_info["dataset_name"].replace("/", "_")
-
-    # Build the markdown content
+    # Build the markdown content with proper spacing
     readme_content = f"""---
 {yaml_string}---
 
@@ -410,39 +384,73 @@ def generate_dataset_card(
 
 {description['overview']}
 
-The dataset includes:
+### Key Features
 {chr(10).join(f'* {feature}' for feature in description['key_features'])}
 
+### Potential Applications
 {description['ml_applications']}
+
+## Dataset Statistics
+
+* Total Records: {stats['basic_stats']['total_records']:,}
+* Total Features: {stats['basic_stats']['total_features']}
+* Memory Usage: {stats['basic_stats']['memory_usage']}
 
 ## Dataset Schema
 
-{schema_table}
+| Field | Type | Description |
+| --- | --- | --- |
+{chr(10).join(f"| {field} | {info['type']} | {info['description']} |" for field, info in openai_analysis['schema'].items())}
 
 ## Example Record
 
-{example_block}
+```json
+{json.dumps(openai_analysis['example'], indent=2)}
+```
 
 ## Data Distribution Analysis
 
-The following visualizations show key characteristics of the dataset:
+The following visualizations show the distribution patterns and characteristics of key features in the dataset:
 
-{distribution_plots_md}
-{wordcloud_plots_md}
+"""
 
-{stats_section}
+    # Add individual distribution plots with clean spacing
+    for col, img_str in distribution_plots.items():
+        readme_content += f"""### Distribution of {col}
+<img src="data:image/png;base64,{img_str}" alt="Distribution of {col}" style="max-width: 800px;">
 
-## Citation and Usage
+"""
 
-If you use this dataset in your research or applications, please cite it as:
+    # Add word clouds with clean spacing
+    if wordcloud_plots:
+        readme_content += "## Feature Word Clouds\n\n"
+        for col, img_str in wordcloud_plots.items():
+            readme_content += f"""### Word Cloud for {col}
+<img src="data:image/png;base64,{img_str}" alt="Word Cloud for {col}" style="max-width: 800px;">
+
+"""
+
+    # Add token statistics if available
+    if stats.get("token_stats") and stats["token_stats"]["total"] > 0:
+        readme_content += """## Token Statistics
+
+"""
+        readme_content += f"* Total Tokens: {stats['token_stats']['total']:,}\n"
+        if stats["token_stats"].get("by_column"):
+            readme_content += "\n**Tokens by Column:**\n"
+            for col, count in stats["token_stats"]["by_column"].items():
+                readme_content += f"* {col}: {count:,}\n"
+
+    # Add citation section
+    clean_name = dataset_info["dataset_name"].replace("/", "_")
+    readme_content += f"""
+## Citation
 
 ```bibtex
-@dataset{{{clean_dataset_name},
+@dataset{{{clean_name},
     title = {{{dataset_info['dataset_name']}}},
-    author = {{Dataset Authors}},
     year = {{{datetime.datetime.now().year}}},
     publisher = {{Hugging Face}},
-    howpublished = {{Hugging Face Datasets}},
     url = {{https://huggingface.co/datasets/{dataset_info['dataset_name']}}}
 }}
 ```
@@ -454,11 +462,154 @@ This dataset is released under the Apache 2.0 License. When using this dataset:
 * 📚 Cite the dataset using the BibTeX entry above
 * 🤝 Consider contributing improvements or reporting issues
 * 💡 Share derivative works with the community when possible
+"""
+
+    return readme_content
+
+
+def get_size_category(record_count: int) -> str:
+    """Determine the size category based on record count."""
+    if record_count < 1000:
+        return "n<1K"
+    elif record_count < 10000:
+        return "1K<n<10K"
+    elif record_count < 100000:
+        return "10K<n<100K"
+    elif record_count < 1000000:
+        return "100K<n<1M"
+    else:
+        return "n>1M"
+
+
+def format_overview_section(analysis: dict, stats: dict) -> str:
+    """Create a comprehensive overview section."""
+    description = analysis["description"]
+    overview = f"""
+{description['overview']}
+
+### Key Features and Characteristics
+{chr(10).join(f'* {feature}' for feature in description['key_features'])}
+
+### Potential Applications
+{description['ml_applications']}
+
+### Dataset Size
+* Total Records: {stats['basic_stats']['total_records']:,}
+* Total Features: {stats['basic_stats']['total_features']}
+* Memory Usage: {stats['basic_stats']['memory_usage']}
+"""
+    return overview.strip()
+
+
+def format_schema_section(schema: dict, df: pd.DataFrame) -> str:
+    """Generate an enhanced schema section with statistics."""
+    # Table header
+    table = "| Field | Type | Description | Non-Null Count | Unique Values |\n"
+    table += "| --- | --- | --- | --- | --- |\n"
+
+    # Generate rows with additional statistics
+    for field, info in schema.items():
+        try:
+            non_null = df[field].count()
+            unique = df[field].nunique()
+            row = f"| {field} | {info['type']} | {info['description']} | {non_null:,} | {unique:,} |"
+            table += row + "\n"
+        except Exception as e:
+            print(f"Error processing field {field}: {e}")
+            continue
+
+    return table
+
+
+def format_visualization_section(
+    distribution_plots: dict, wordcloud_plots: dict
+) -> str:
+    """Format the visualization section with improved layout."""
+    content = (
+        """The following visualizations show key characteristics of the dataset:\n\n"""
+    )
+
+    # Add distribution plots
+    if distribution_plots:
+        content += "### Distribution Plots\n\n"
+        content += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px;">\n'
+        for col, img_str in distribution_plots.items():
+            content += f"""<div>
+<h4>Distribution of {col}</h4>
+<img src="data:image/png;base64,{img_str}" style="width: 100%; height: auto;">
+</div>\n"""
+        content += "</div>\n\n"
+
+    # Add word clouds
+    if wordcloud_plots:
+        content += "### Word Clouds\n\n"
+        content += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">\n'
+        for col, img_str in wordcloud_plots.items():
+            content += f"""<div>
+<h4>Word Cloud for {col}</h4>
+<img src="data:image/png;base64,{img_str}" style="width: 100%; height: auto;">
+</div>\n"""
+        content += "</div>\n"
+
+    return content
+
+
+def generate_limitations_section(df: pd.DataFrame, analysis: dict) -> str:
+    """Generate a section about dataset limitations and potential biases."""
+    limitations = [
+        "This dataset may not be representative of all possible scenarios or use cases.",
+        f"The dataset contains {len(df):,} records, which may limit its applicability to certain tasks.",
+        "There may be inherent biases in the data collection or annotation process.",
+    ]
+
+    # Add warnings about missing values if present
+    missing_values = df.isnull().sum()
+    if missing_values.any():
+        limitations.append(
+            f"Some fields contain missing values: {', '.join(missing_values[missing_values > 0].index)}"
+        )
+
+    return f"""The following limitations and potential biases should be considered when using this dataset:
+
+{chr(10).join(f'* {limitation}' for limitation in limitations)}
+
+Please consider these limitations when using the dataset and validate results accordingly."""
+
+
+def generate_usage_section(dataset_info: dict, analysis: dict) -> str:
+    """Generate comprehensive usage guidelines."""
+    return f"""This dataset is released under the Apache 2.0 License. When using this dataset:
+
+* 📚 Cite the dataset using the BibTeX entry provided below
+* 🤝 Consider contributing improvements or reporting issues
+* 💡 Share derivative works with the community when possible
+* 🔍 Validate the dataset's suitability for your specific use case
+* ⚠️ Be aware of the limitations and biases discussed above
+* 📊 Consider the dataset size and computational requirements for your application
 
 For questions or additional information, please visit the dataset repository on Hugging Face.
 """
 
-    return readme_content
+
+def get_task_categories(df: pd.DataFrame, analysis: dict) -> list:
+    """Infer potential task categories based on the data and analysis."""
+    categories = ["other"]  # Default category
+
+    # Add more sophisticated task inference logic based on column names and content
+    text_columns = df.select_dtypes(include=["object"]).columns
+    numeric_columns = df.select_dtypes(include=["int64", "float64"]).columns
+
+    if len(text_columns) > 0:
+        categories.append("text-classification")
+    if len(numeric_columns) > 0:
+        categories.append("regression")
+
+    return list(set(categories))  # Remove duplicates
+
+
+def clean_dataset_name(name: str) -> str:
+    """Clean dataset name for citation."""
+    return name.replace("/", "_").replace("-", "_").lower()
 
 
 def generate_schema_table(schema: dict) -> str:
@@ -474,6 +625,29 @@ def generate_schema_table(schema: dict) -> str:
     # Join all rows
     table += "\n".join(rows)
     return table
+
+
+def format_stats_section(stats: dict) -> str:
+    """Format the statistics section of the dataset card."""
+    content = """### Basic Statistics
+"""
+    # Add basic stats
+    for key, value in stats["basic_stats"].items():
+        # Convert key from snake_case to Title Case
+        formatted_key = key.replace("_", " ").title()
+        content += f"* {formatted_key}: {value}\n"
+
+    # Add token statistics if available
+    if stats.get("token_stats") and stats["token_stats"]["total"] > 0:
+        content += "\n### Token Statistics\n"
+        content += f"* Total Tokens: {stats['token_stats']['total']:,}\n"
+
+        if stats["token_stats"].get("by_column"):
+            content += "\n**Tokens by Column:**\n"
+            for col, count in stats["token_stats"]["by_column"].items():
+                content += f"* {col}: {count:,}\n"
+
+    return content
 
 
 def format_schema_item(field_name: str, field_info: dict, prefix: str = "") -> list:
